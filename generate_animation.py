@@ -386,8 +386,11 @@ def draw_landmarks_on_canvas(canvas, landmarks, canvas_width, canvas_height,
         connections: List of landmark index pairs to connect
         label: Optional label text to display
     """
+    # Get actual number of landmarks (handle cases with fewer than 468)
+    num_landmarks = min(landmarks.shape[0], 468)
+
     # Convert normalized coordinates to pixel coordinates
-    for i in range(468):
+    for i in range(num_landmarks):
         x = int(landmarks[i, 0] * canvas_width) + offset_x
         y = int(landmarks[i, 1] * canvas_height)
 
@@ -401,19 +404,21 @@ def draw_landmarks_on_canvas(canvas, landmarks, canvas_width, canvas_height,
     # Draw connections if provided
     if connections:
         for idx1, idx2 in connections:
-            x1 = int(landmarks[idx1, 0] * canvas_width) + offset_x
-            y1 = int(landmarks[idx1, 1] * canvas_height)
-            x2 = int(landmarks[idx2, 0] * canvas_width) + offset_x
-            y2 = int(landmarks[idx2, 1] * canvas_height)
+            # Check if both indices are within bounds
+            if idx1 < num_landmarks and idx2 < num_landmarks:
+                x1 = int(landmarks[idx1, 0] * canvas_width) + offset_x
+                y1 = int(landmarks[idx1, 1] * canvas_height)
+                x2 = int(landmarks[idx2, 0] * canvas_width) + offset_x
+                y2 = int(landmarks[idx2, 1] * canvas_height)
 
-            # Clamp coordinates
-            x1 = max(0, min(canvas.shape[1] - 1, x1))
-            y1 = max(0, min(canvas.shape[0] - 1, y1))
-            x2 = max(0, min(canvas.shape[1] - 1, x2))
-            y2 = max(0, min(canvas.shape[0] - 1, y2))
+                # Clamp coordinates
+                x1 = max(0, min(canvas.shape[1] - 1, x1))
+                y1 = max(0, min(canvas.shape[0] - 1, y1))
+                x2 = max(0, min(canvas.shape[1] - 1, x2))
+                y2 = max(0, min(canvas.shape[0] - 1, y2))
 
-            # Draw line
-            cv2.line(canvas, (x1, y1), (x2, y2), color, 1)
+                # Draw line
+                cv2.line(canvas, (x1, y1), (x2, y2), color, 1)
 
     # Add label if provided
     if label:
@@ -486,9 +491,11 @@ def generate_animation(
             for i, frame in enumerate(ref_data['frames']):
                 if frame['face_detected']:
                     for j, lm in enumerate(frame['landmarks']):
-                        original_landmarks[i, j, 0] = lm['x']
-                        original_landmarks[i, j, 1] = lm['y']
-                        original_landmarks[i, j, 2] = lm['z']
+                        # Only process up to 468 landmarks to avoid index errors
+                        if j < 468:
+                            original_landmarks[i, j, 0] = lm['x']
+                            original_landmarks[i, j, 1] = lm['y']
+                            original_landmarks[i, j, 2] = lm['z']
 
             print(f"  ✓ Loaded {num_ref_frames} reference frames")
             print()
