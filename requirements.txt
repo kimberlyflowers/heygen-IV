@@ -16,6 +16,15 @@ opencv-python-headless==4.12.0.88
 # Using latest stable version with continued security support
 numpy>=2.0.0,<3.0.0
 
+# SciPy - Scientific computing (interpolation for audio-video sync)
+scipy>=1.11.0
+
+# Librosa - Audio analysis and MFCC feature extraction
+librosa>=0.10.0
+
+# Scikit-learn - Machine learning utilities
+scikit-learn>=1.3.0
+
 # Note: Using opencv-python-headless instead of opencv-python reduces
 # installation size by ~100MB and removes unnecessary GUI dependencies
 # (GTK, Qt) which are security attack vectors.
