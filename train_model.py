@@ -9,6 +9,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader, random_split
+from sklearn.preprocessing import StandardScaler
 import time
 from pathlib import Path
 
@@ -38,7 +39,7 @@ class LipSyncMLP(nn.Module):
 
     Architecture:
         Input: MFCC features (13 dimensions)
-        Hidden layers: 3 layers with ReLU activation and dropout
+        Hidden layers: 3 layers with LeakyReLU activation and dropout
         Output: Flattened facial landmarks (1404 dimensions = 468 landmarks * 3 coordinates)
     """
 
@@ -49,16 +50,16 @@ class LipSyncMLP(nn.Module):
 
         # Input layer
         layers.append(nn.Linear(input_size, hidden_sizes[0]))
-        layers.append(nn.ReLU())
+        layers.append(nn.LeakyReLU(0.2))  # LeakyReLU prevents dead neurons
         layers.append(nn.Dropout(dropout))
 
         # Hidden layers
         for i in range(len(hidden_sizes) - 1):
             layers.append(nn.Linear(hidden_sizes[i], hidden_sizes[i + 1]))
-            layers.append(nn.ReLU())
+            layers.append(nn.LeakyReLU(0.2))  # LeakyReLU prevents dead neurons
             layers.append(nn.Dropout(dropout))
 
-        # Output layer
+        # Output layer (no activation - we'll use normalized outputs)
         layers.append(nn.Linear(hidden_sizes[-1], output_size))
 
         self.network = nn.Sequential(*layers)
@@ -159,8 +160,36 @@ def train_model(
     print(f"  Total samples: {len(mfcc_features)}")
     print()
 
-    # Create dataset
-    full_dataset = AudioToLandmarksDataset(mfcc_features, landmarks_flat)
+    # Normalize and standardize data
+    print("Preprocessing data...")
+
+    # 1. Normalize landmarks to [-1, 1] range
+    # Original landmarks are in [0, 1] range (normalized coordinates)
+    # Convert to [-1, 1]: new_val = (old_val * 2) - 1
+    landmarks_normalized = (landmarks_flat * 2.0) - 1.0
+
+    # Store min/max for denormalization (even though we know it's -1/1)
+    landmarks_min = landmarks_normalized.min()
+    landmarks_max = landmarks_normalized.max()
+
+    print(f"  Landmarks normalized to [{landmarks_min:.3f}, {landmarks_max:.3f}]")
+
+    # 2. Standardize MFCC features using StandardScaler
+    # This centers data to mean=0, std=1
+    mfcc_scaler = StandardScaler()
+    mfcc_standardized = mfcc_scaler.fit_transform(mfcc_features)
+
+    print(f"  MFCC standardized: mean={mfcc_standardized.mean():.6f}, std={mfcc_standardized.std():.6f}")
+
+    # 3. Add small epsilon to avoid any numerical issues
+    epsilon = 1e-8
+    mfcc_standardized = mfcc_standardized + epsilon
+
+    print(f"  Added epsilon={epsilon} for numerical stability")
+    print()
+
+    # Create dataset with preprocessed data
+    full_dataset = AudioToLandmarksDataset(mfcc_standardized, landmarks_normalized)
 
     # Split into train and validation
     train_size = int(train_split * len(full_dataset))
@@ -243,6 +272,11 @@ def train_model(
                 'optimizer_state_dict': optimizer.state_dict(),
                 'train_loss': train_loss,
                 'val_loss': val_loss,
+                'mfcc_scaler_mean': mfcc_scaler.mean_,
+                'mfcc_scaler_scale': mfcc_scaler.scale_,
+                'landmarks_min': landmarks_min,
+                'landmarks_max': landmarks_max,
+                'epsilon': epsilon,
             }, output_path)
             best_marker = " ⭐ NEW BEST"
         else:
@@ -290,7 +324,12 @@ def train_model(
             'hidden_sizes': [256, 512, 512],
             'output_size': output_size,
             'dropout': 0.2
-        }
+        },
+        'mfcc_scaler_mean': mfcc_scaler.mean_,
+        'mfcc_scaler_scale': mfcc_scaler.scale_,
+        'landmarks_min': landmarks_min,
+        'landmarks_max': landmarks_max,
+        'epsilon': epsilon,
     }, output_path)
 
     file_size_mb = Path(output_path).stat().st_size / (1024 * 1024)

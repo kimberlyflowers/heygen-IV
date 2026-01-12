@@ -28,16 +28,16 @@ class LipSyncMLP(nn.Module):
 
         # Input layer
         layers.append(nn.Linear(input_size, hidden_sizes[0]))
-        layers.append(nn.ReLU())
+        layers.append(nn.LeakyReLU(0.2))  # LeakyReLU prevents dead neurons
         layers.append(nn.Dropout(dropout))
 
         # Hidden layers
         for i in range(len(hidden_sizes) - 1):
             layers.append(nn.Linear(hidden_sizes[i], hidden_sizes[i + 1]))
-            layers.append(nn.ReLU())
+            layers.append(nn.LeakyReLU(0.2))  # LeakyReLU prevents dead neurons
             layers.append(nn.Dropout(dropout))
 
-        # Output layer
+        # Output layer (no activation - we'll use normalized outputs)
         layers.append(nn.Linear(hidden_sizes[-1], output_size))
 
         self.network = nn.Sequential(*layers)
@@ -55,7 +55,9 @@ def load_model(model_path, device='cuda'):
         device: Device to load model on ('cuda' or 'cpu')
 
     Returns:
-        Loaded model in evaluation mode
+        Tuple of (model, preprocessing_params)
+        - model: Loaded model in evaluation mode
+        - preprocessing_params: Dictionary with scaler and normalization info
     """
     print(f"Loading model from {model_path}...")
 
@@ -95,7 +97,21 @@ def load_model(model_path, device='cuda'):
     if 'best_val_loss' in checkpoint:
         print(f"  Best validation loss: {checkpoint['best_val_loss']:.6f}")
 
-    return model
+    # Load preprocessing parameters
+    preprocessing_params = {
+        'mfcc_scaler_mean': checkpoint.get('mfcc_scaler_mean', None),
+        'mfcc_scaler_scale': checkpoint.get('mfcc_scaler_scale', None),
+        'landmarks_min': checkpoint.get('landmarks_min', -1.0),
+        'landmarks_max': checkpoint.get('landmarks_max', 1.0),
+        'epsilon': checkpoint.get('epsilon', 1e-8),
+    }
+
+    if preprocessing_params['mfcc_scaler_mean'] is not None:
+        print(f"  ✓ Preprocessing parameters loaded")
+    else:
+        print(f"  ⚠ Warning: No preprocessing parameters found (using defaults)")
+
+    return model, preprocessing_params
 
 
 def extract_mfcc_from_audio(audio_path, target_frames=None, fps=30, n_mfcc=13):
@@ -160,22 +176,40 @@ def extract_mfcc_from_audio(audio_path, target_frames=None, fps=30, n_mfcc=13):
     }
 
 
-def predict_landmarks(model, mfcc_features, device='cuda', batch_size=32):
+def predict_landmarks(model, mfcc_features, preprocessing_params, device='cuda', batch_size=32):
     """
     Predict facial landmarks from MFCC features using trained model.
 
     Args:
         model: Trained PyTorch model
         mfcc_features: MFCC features array (num_frames, n_mfcc)
+        preprocessing_params: Dictionary with scaler and normalization parameters
         device: Device for inference
         batch_size: Batch size for inference
 
     Returns:
         Predicted landmarks array (num_frames, 468, 3)
     """
+    print("Preprocessing MFCC features...")
+
+    # Apply standardization to MFCC features (same as training)
+    mfcc_scaler_mean = preprocessing_params['mfcc_scaler_mean']
+    mfcc_scaler_scale = preprocessing_params['mfcc_scaler_scale']
+    epsilon = preprocessing_params['epsilon']
+
+    if mfcc_scaler_mean is not None and mfcc_scaler_scale is not None:
+        # Standardize: (X - mean) / scale
+        mfcc_standardized = (mfcc_features - mfcc_scaler_mean) / (mfcc_scaler_scale + epsilon)
+        # Add epsilon for numerical stability
+        mfcc_standardized = mfcc_standardized + epsilon
+        print(f"  ✓ MFCC standardized (mean≈0, std≈1)")
+    else:
+        mfcc_standardized = mfcc_features
+        print(f"  ⚠ Warning: No scaler parameters, using raw MFCC")
+
     print("Running inference...")
 
-    num_frames = mfcc_features.shape[0]
+    num_frames = mfcc_standardized.shape[0]
     predictions = []
 
     model.eval()
@@ -183,7 +217,7 @@ def predict_landmarks(model, mfcc_features, device='cuda', batch_size=32):
         # Process in batches for memory efficiency
         for i in range(0, num_frames, batch_size):
             batch_end = min(i + batch_size, num_frames)
-            batch_mfcc = mfcc_features[i:batch_end]
+            batch_mfcc = mfcc_standardized[i:batch_end]
 
             # Convert to tensor and move to device
             batch_tensor = torch.FloatTensor(batch_mfcc).to(device)
@@ -202,10 +236,26 @@ def predict_landmarks(model, mfcc_features, device='cuda', batch_size=32):
 
     print(f"  ✓ Inference complete!")
     print(f"  Predictions shape: {predictions.shape}")
+
+    # Denormalize predictions from [-1, 1] back to [0, 1]
+    print("Denormalizing predictions...")
+
+    landmarks_min = preprocessing_params['landmarks_min']
+    landmarks_max = preprocessing_params['landmarks_max']
+
+    # Predictions are in [-1, 1] range, convert back to [0, 1]
+    # Formula: (normalized + 1) / 2
+    predictions_denormalized = (predictions + 1.0) / 2.0
+
+    # Clamp to [0, 1] range to handle any numerical issues
+    predictions_denormalized = np.clip(predictions_denormalized, 0.0, 1.0)
+
+    print(f"  ✓ Denormalized to [0, 1] range")
+    print(f"  Output range: [{predictions_denormalized.min():.3f}, {predictions_denormalized.max():.3f}]")
     print()
 
     # Reshape from (num_frames, 1404) to (num_frames, 468, 3)
-    landmarks = predictions.reshape(num_frames, 468, 3)
+    landmarks = predictions_denormalized.reshape(num_frames, 468, 3)
 
     return landmarks
 
@@ -478,8 +528,8 @@ def generate_animation(
         print(f"GPU: {torch.cuda.get_device_name(0)}")
     print()
 
-    # Load model
-    model = load_model(model_path, device)
+    # Load model and preprocessing parameters
+    model, preprocessing_params = load_model(model_path, device)
     print()
 
     # Extract MFCC features from audio
@@ -487,8 +537,8 @@ def generate_animation(
         audio_path, target_frames=target_frames, fps=fps
     )
 
-    # Predict landmarks
-    predicted_landmarks = predict_landmarks(model, mfcc_features, device)
+    # Predict landmarks (with preprocessing and denormalization)
+    predicted_landmarks = predict_landmarks(model, mfcc_features, preprocessing_params, device)
 
     # Save to JSON
     save_landmarks_json(predicted_landmarks, audio_metadata, output_json)
