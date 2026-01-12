@@ -168,24 +168,29 @@ def train_model(
     # Convert to [-1, 1]: new_val = (old_val * 2) - 1
     landmarks_normalized = (landmarks_flat * 2.0) - 1.0
 
-    # Store min/max for denormalization (even though we know it's -1/1)
-    landmarks_min = landmarks_normalized.min()
-    landmarks_max = landmarks_normalized.max()
+    print(f"  Landmarks before normalization: min={landmarks_flat.min():.4f}, max={landmarks_flat.max():.4f}, mean={landmarks_flat.mean():.4f}")
+    print(f"  Landmarks after normalization: min={landmarks_normalized.min():.4f}, max={landmarks_normalized.max():.4f}, mean={landmarks_normalized.mean():.4f}")
 
-    print(f"  Landmarks normalized to [{landmarks_min:.3f}, {landmarks_max:.3f}]")
+    # 2. Manually standardize MFCC features (zero-center)
+    # Calculate mean and std manually for better control
+    mfcc_mean = np.mean(mfcc_features, axis=0, keepdims=True)
+    mfcc_std = np.std(mfcc_features, axis=0, keepdims=True) + 1e-8  # Add epsilon to prevent division by zero
 
-    # 2. Standardize MFCC features using StandardScaler
-    # This centers data to mean=0, std=1
-    mfcc_scaler = StandardScaler()
-    mfcc_standardized = mfcc_scaler.fit_transform(mfcc_features)
+    # Apply standardization: (X - mean) / std
+    mfcc_standardized = (mfcc_features - mfcc_mean) / mfcc_std
 
-    print(f"  MFCC standardized: mean={mfcc_standardized.mean():.6f}, std={mfcc_standardized.std():.6f}")
+    print(f"  MFCC before standardization: min={mfcc_features.min():.4f}, max={mfcc_features.max():.4f}, mean={mfcc_features.mean():.4f}")
+    print(f"  MFCC after standardization: min={mfcc_standardized.min():.4f}, max={mfcc_standardized.max():.4f}, mean={mfcc_standardized.mean():.4f}, std={mfcc_standardized.std():.4f}")
 
-    # 3. Add small epsilon to avoid any numerical issues
+    # Store parameters for inference
     epsilon = 1e-8
-    mfcc_standardized = mfcc_standardized + epsilon
+    print(f"  Epsilon for numerical stability: {epsilon}")
+    print()
 
-    print(f"  Added epsilon={epsilon} for numerical stability")
+    # Debug: Print sample values
+    print("Debug - Sample preprocessed values:")
+    print(f"  MFCC frame 0, first 3 coefficients: {mfcc_standardized[0, :3]}")
+    print(f"  Landmarks frame 0, first 3 values: {landmarks_normalized[0, :3]}")
     print()
 
     # Create dataset with preprocessed data
@@ -205,13 +210,13 @@ def train_model(
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
 
-    # Initialize model
+    # Initialize model with smaller architecture to prevent overfitting
     input_size = mfcc_features.shape[1]  # 13 MFCC coefficients
     output_size = landmarks_flat.shape[1]  # 1404 (468 landmarks * 3 coordinates)
 
     model = LipSyncMLP(
         input_size=input_size,
-        hidden_sizes=[256, 512, 512],  # 3 hidden layers
+        hidden_sizes=[128, 256, 256],  # Smaller model: 3 hidden layers
         output_size=output_size,
         dropout=0.2
     )
@@ -272,10 +277,10 @@ def train_model(
                 'optimizer_state_dict': optimizer.state_dict(),
                 'train_loss': train_loss,
                 'val_loss': val_loss,
-                'mfcc_scaler_mean': mfcc_scaler.mean_,
-                'mfcc_scaler_scale': mfcc_scaler.scale_,
-                'landmarks_min': landmarks_min,
-                'landmarks_max': landmarks_max,
+                'mfcc_mean': mfcc_mean,  # Manual mean (shape: 1, 13)
+                'mfcc_std': mfcc_std,    # Manual std (shape: 1, 13)
+                'landmarks_min': landmarks_normalized.min(),
+                'landmarks_max': landmarks_normalized.max(),
                 'epsilon': epsilon,
             }, output_path)
             best_marker = " ⭐ NEW BEST"
@@ -321,14 +326,14 @@ def train_model(
         'val_losses': val_losses,
         'model_config': {
             'input_size': input_size,
-            'hidden_sizes': [256, 512, 512],
+            'hidden_sizes': [128, 256, 256],  # Updated to match new architecture
             'output_size': output_size,
             'dropout': 0.2
         },
-        'mfcc_scaler_mean': mfcc_scaler.mean_,
-        'mfcc_scaler_scale': mfcc_scaler.scale_,
-        'landmarks_min': landmarks_min,
-        'landmarks_max': landmarks_max,
+        'mfcc_mean': mfcc_mean,  # Manual mean (shape: 1, 13)
+        'mfcc_std': mfcc_std,    # Manual std (shape: 1, 13)
+        'landmarks_min': landmarks_normalized.min(),
+        'landmarks_max': landmarks_normalized.max(),
         'epsilon': epsilon,
     }, output_path)
 

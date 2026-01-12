@@ -99,15 +99,17 @@ def load_model(model_path, device='cuda'):
 
     # Load preprocessing parameters
     preprocessing_params = {
-        'mfcc_scaler_mean': checkpoint.get('mfcc_scaler_mean', None),
-        'mfcc_scaler_scale': checkpoint.get('mfcc_scaler_scale', None),
+        'mfcc_mean': checkpoint.get('mfcc_mean', None),
+        'mfcc_std': checkpoint.get('mfcc_std', None),
         'landmarks_min': checkpoint.get('landmarks_min', -1.0),
         'landmarks_max': checkpoint.get('landmarks_max', 1.0),
         'epsilon': checkpoint.get('epsilon', 1e-8),
     }
 
-    if preprocessing_params['mfcc_scaler_mean'] is not None:
+    if preprocessing_params['mfcc_mean'] is not None:
         print(f"  ✓ Preprocessing parameters loaded")
+        print(f"    MFCC mean shape: {preprocessing_params['mfcc_mean'].shape}")
+        print(f"    MFCC std shape: {preprocessing_params['mfcc_std'].shape}")
     else:
         print(f"  ⚠ Warning: No preprocessing parameters found (using defaults)")
 
@@ -193,16 +195,17 @@ def predict_landmarks(model, mfcc_features, preprocessing_params, device='cuda',
     print("Preprocessing MFCC features...")
 
     # Apply standardization to MFCC features (same as training)
-    mfcc_scaler_mean = preprocessing_params['mfcc_scaler_mean']
-    mfcc_scaler_scale = preprocessing_params['mfcc_scaler_scale']
+    mfcc_mean = preprocessing_params['mfcc_mean']
+    mfcc_std = preprocessing_params['mfcc_std']
     epsilon = preprocessing_params['epsilon']
 
-    if mfcc_scaler_mean is not None and mfcc_scaler_scale is not None:
-        # Standardize: (X - mean) / scale
-        mfcc_standardized = (mfcc_features - mfcc_scaler_mean) / (mfcc_scaler_scale + epsilon)
-        # Add epsilon for numerical stability
-        mfcc_standardized = mfcc_standardized + epsilon
-        print(f"  ✓ MFCC standardized (mean≈0, std≈1)")
+    print(f"  MFCC features before standardization: min={mfcc_features.min():.4f}, max={mfcc_features.max():.4f}, mean={mfcc_features.mean():.4f}")
+
+    if mfcc_mean is not None and mfcc_std is not None:
+        # Manually standardize: (X - mean) / std
+        mfcc_standardized = (mfcc_features - mfcc_mean) / mfcc_std
+        print(f"  ✓ MFCC standardized using saved mean/std")
+        print(f"    After standardization: min={mfcc_standardized.min():.4f}, max={mfcc_standardized.max():.4f}, mean={mfcc_standardized.mean():.4f}, std={mfcc_standardized.std():.4f}")
     else:
         mfcc_standardized = mfcc_features
         print(f"  ⚠ Warning: No scaler parameters, using raw MFCC")
@@ -240,8 +243,7 @@ def predict_landmarks(model, mfcc_features, preprocessing_params, device='cuda',
     # Denormalize predictions from [-1, 1] back to [0, 1]
     print("Denormalizing predictions...")
 
-    landmarks_min = preprocessing_params['landmarks_min']
-    landmarks_max = preprocessing_params['landmarks_max']
+    print(f"  Predictions before denormalization: min={predictions.min():.4f}, max={predictions.max():.4f}, mean={predictions.mean():.4f}")
 
     # Predictions are in [-1, 1] range, convert back to [0, 1]
     # Formula: (normalized + 1) / 2
@@ -251,11 +253,32 @@ def predict_landmarks(model, mfcc_features, preprocessing_params, device='cuda',
     predictions_denormalized = np.clip(predictions_denormalized, 0.0, 1.0)
 
     print(f"  ✓ Denormalized to [0, 1] range")
-    print(f"  Output range: [{predictions_denormalized.min():.3f}, {predictions_denormalized.max():.3f}]")
+    print(f"  After denormalization: min={predictions_denormalized.min():.4f}, max={predictions_denormalized.max():.4f}, mean={predictions_denormalized.mean():.4f}")
     print()
 
     # Reshape from (num_frames, 1404) to (num_frames, 468, 3)
     landmarks = predictions_denormalized.reshape(num_frames, 468, 3)
+
+    # DEBUG: Print first 5 coordinates to verify non-zero predictions
+    print("=" * 70)
+    print("DEBUG: First 5 predicted landmark coordinates (frame 0):")
+    print("=" * 70)
+    for i in range(min(5, landmarks.shape[1])):
+        x, y, z = landmarks[0, i, 0], landmarks[0, i, 1], landmarks[0, i, 2]
+        print(f"  Landmark {i}: x={x:.6f}, y={y:.6f}, z={z:.6f}")
+    print("=" * 70)
+    print()
+
+    # Check if all predictions are zeros or same value
+    if np.allclose(predictions_denormalized, 0.0):
+        print("⚠️  WARNING: All predictions are ZERO! Model may have collapsed.")
+    elif np.allclose(predictions_denormalized, 0.5):
+        print("⚠️  WARNING: All predictions are 0.5! Model may have collapsed to mean.")
+    elif predictions_denormalized.std() < 0.001:
+        print(f"⚠️  WARNING: Very low variance (std={predictions_denormalized.std():.6f}). Model may have collapsed.")
+    else:
+        print(f"✓ Predictions look good! Variance: {predictions_denormalized.std():.6f}")
+    print()
 
     return landmarks
 
@@ -334,14 +357,18 @@ def create_visualization_video(landmarks, output_path, fps=30, width=1920, heigh
     num_frames = landmarks.shape[0]
 
     # Determine video layout and get original frame count
+    # Add 500px extra offset to ensure predicted face is visible
+    PREDICTED_OFFSET = 500  # Extra horizontal offset for debugging
+
     if original_landmarks is not None:
-        # Side-by-side comparison
-        video_width = width * 2
+        # Side-by-side comparison with extra offset for predicted
+        video_width = width * 2 + PREDICTED_OFFSET
         canvas_width = width
         num_original_frames = original_landmarks.shape[0]
         print("  Mode: Side-by-side comparison (Original | Predicted)")
         print(f"  Predicted frames: {num_frames}")
         print(f"  Original frames: {num_original_frames}")
+        print(f"  🔍 DEBUG: Predicted face offset by {PREDICTED_OFFSET}px for visibility")
 
         if num_frames > num_original_frames:
             print(f"  ⚠ Warning: Predicted has {num_frames - num_original_frames} more frames than original")
@@ -351,10 +378,11 @@ def create_visualization_video(landmarks, output_path, fps=30, width=1920, heigh
             print(f"  → Video will end at frame {num_frames}")
     else:
         # Single view
-        video_width = width
+        video_width = width + PREDICTED_OFFSET
         canvas_width = width
         num_original_frames = 0  # No original frames
         print("  Mode: Predicted landmarks only")
+        print(f"  🔍 DEBUG: Predicted face offset by {PREDICTED_OFFSET}px for visibility")
 
     # Setup video writer
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
@@ -399,12 +427,13 @@ def create_visualization_video(landmarks, output_path, fps=30, width=1920, heigh
         # Create canvas
         canvas = np.zeros((height, video_width, 3), dtype=np.uint8)
 
-        # Draw predicted landmarks
+        # Draw predicted landmarks with extra offset for visibility
         pred_landmarks = landmarks[frame_idx]
+        pred_offset_x = (canvas_width + PREDICTED_OFFSET) if original_landmarks is not None else PREDICTED_OFFSET
         draw_landmarks_on_canvas(canvas, pred_landmarks, width, height,
-                                 offset_x=canvas_width if original_landmarks is not None else 0,
+                                 offset_x=pred_offset_x,
                                  color=(0, 255, 0), connections=FACE_CONNECTIONS,
-                                 label="PREDICTED" if original_landmarks is not None else None)
+                                 label="PREDICTED (500px offset)" if original_landmarks is not None else "PREDICTED")
 
         # Draw original landmarks if provided (side-by-side)
         if original_landmarks is not None:
