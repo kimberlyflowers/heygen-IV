@@ -283,16 +283,27 @@ def create_visualization_video(landmarks, output_path, fps=30, width=1920, heigh
 
     num_frames = landmarks.shape[0]
 
-    # Determine video layout
+    # Determine video layout and get original frame count
     if original_landmarks is not None:
         # Side-by-side comparison
         video_width = width * 2
         canvas_width = width
+        num_original_frames = original_landmarks.shape[0]
         print("  Mode: Side-by-side comparison (Original | Predicted)")
+        print(f"  Predicted frames: {num_frames}")
+        print(f"  Original frames: {num_original_frames}")
+
+        if num_frames > num_original_frames:
+            print(f"  ⚠ Warning: Predicted has {num_frames - num_original_frames} more frames than original")
+            print(f"  → Original will freeze at last frame after frame {num_original_frames}")
+        elif num_frames < num_original_frames:
+            print(f"  ⚠ Warning: Original has {num_original_frames - num_frames} more frames than predicted")
+            print(f"  → Video will end at frame {num_frames}")
     else:
         # Single view
         video_width = width
         canvas_width = width
+        num_original_frames = 0  # No original frames
         print("  Mode: Predicted landmarks only")
 
     # Setup video writer
@@ -347,7 +358,14 @@ def create_visualization_video(landmarks, output_path, fps=30, width=1920, heigh
 
         # Draw original landmarks if provided (side-by-side)
         if original_landmarks is not None:
-            orig_landmarks = original_landmarks[frame_idx]
+            # Check if frame_idx is within bounds of original landmarks
+            if frame_idx < num_original_frames:
+                # Use the actual frame from original data
+                orig_landmarks = original_landmarks[frame_idx]
+            else:
+                # Use the last available frame when beyond original data
+                orig_landmarks = original_landmarks[num_original_frames - 1]
+
             draw_landmarks_on_canvas(canvas, orig_landmarks, width, height,
                                      offset_x=0, color=(0, 165, 255),
                                      connections=FACE_CONNECTIONS, label="ORIGINAL")
