@@ -21,7 +21,7 @@ class LipSyncMLP(nn.Module):
     Must match the architecture used during training.
     """
 
-    def __init__(self, input_size=13, hidden_sizes=[256, 512, 512], output_size=1404, dropout=0.2):
+    def __init__(self, input_size=13, hidden_sizes=[512, 1024, 512], output_size=1404, dropout=0.2):
         super(LipSyncMLP, self).__init__()
 
         layers = []
@@ -74,7 +74,7 @@ def load_model(model_path, device='cuda'):
     else:
         # Default configuration (if not saved in checkpoint)
         input_size = 13
-        hidden_sizes = [256, 512, 512]
+        hidden_sizes = [512, 1024, 512]
         output_size = 1404
         dropout = 0.2
 
@@ -103,6 +103,7 @@ def load_model(model_path, device='cuda'):
         'mfcc_std': checkpoint.get('mfcc_std', None),
         'landmarks_min': checkpoint.get('landmarks_min', -1.0),
         'landmarks_max': checkpoint.get('landmarks_max', 1.0),
+        'landmark_scale_factor': checkpoint.get('landmark_scale_factor', 10.0),  # CRITICAL: 10x scaling
         'epsilon': checkpoint.get('epsilon', 1e-8),
     }
 
@@ -110,6 +111,7 @@ def load_model(model_path, device='cuda'):
         print(f"  ✓ Preprocessing parameters loaded")
         print(f"    MFCC mean shape: {preprocessing_params['mfcc_mean'].shape}")
         print(f"    MFCC std shape: {preprocessing_params['mfcc_std'].shape}")
+        print(f"    🔥 Landmark scale factor: {preprocessing_params['landmark_scale_factor']}x")
     else:
         print(f"  ⚠ Warning: No preprocessing parameters found (using defaults)")
 
@@ -239,15 +241,24 @@ def predict_landmarks(model, mfcc_features, preprocessing_params, device='cuda',
 
     print(f"  ✓ Inference complete!")
     print(f"  Predictions shape: {predictions.shape}")
+    print(f"  Predictions before scaling: min={predictions.min():.4f}, max={predictions.max():.4f}, mean={predictions.mean():.4f}")
+    print()
+
+    # CRITICAL: Divide by scale factor to undo the 10x scaling from training
+    scale_factor = preprocessing_params['landmark_scale_factor']
+    print(f"Inverse scaling predictions...")
+    print(f"  🔥 Dividing by scale factor: {scale_factor}x")
+
+    predictions_unscaled = predictions / scale_factor
+
+    print(f"  After inverse scaling: min={predictions_unscaled.min():.4f}, max={predictions_unscaled.max():.4f}, mean={predictions_unscaled.mean():.4f}")
 
     # Denormalize predictions from [-1, 1] back to [0, 1]
     print("Denormalizing predictions...")
 
-    print(f"  Predictions before denormalization: min={predictions.min():.4f}, max={predictions.max():.4f}, mean={predictions.mean():.4f}")
-
-    # Predictions are in [-1, 1] range, convert back to [0, 1]
+    # Predictions are in [-1, 1] range (after unscaling), convert back to [0, 1]
     # Formula: (normalized + 1) / 2
-    predictions_denormalized = (predictions + 1.0) / 2.0
+    predictions_denormalized = (predictions_unscaled + 1.0) / 2.0
 
     # Clamp to [0, 1] range to handle any numerical issues
     predictions_denormalized = np.clip(predictions_denormalized, 0.0, 1.0)

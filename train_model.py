@@ -163,13 +163,20 @@ def train_model(
     # Normalize and standardize data
     print("Preprocessing data...")
 
-    # 1. Normalize landmarks to [-1, 1] range
+    # 1. Normalize landmarks to [-1, 1] range, then scale by 10 for larger gradients
     # Original landmarks are in [0, 1] range (normalized coordinates)
     # Convert to [-1, 1]: new_val = (old_val * 2) - 1
     landmarks_normalized = (landmarks_flat * 2.0) - 1.0
 
     print(f"  Landmarks before normalization: min={landmarks_flat.min():.4f}, max={landmarks_flat.max():.4f}, mean={landmarks_flat.mean():.4f}")
     print(f"  Landmarks after normalization: min={landmarks_normalized.min():.4f}, max={landmarks_normalized.max():.4f}, mean={landmarks_normalized.mean():.4f}")
+
+    # CRITICAL: Scale by 10 to give model larger gradients to work with
+    LANDMARK_SCALE_FACTOR = 10.0
+    landmarks_scaled = landmarks_normalized * LANDMARK_SCALE_FACTOR
+
+    print(f"  🔥 Landmarks scaled by {LANDMARK_SCALE_FACTOR}x: min={landmarks_scaled.min():.4f}, max={landmarks_scaled.max():.4f}, mean={landmarks_scaled.mean():.4f}")
+    print(f"  This gives the model MUCH larger gradients to learn from!")
 
     # 2. Manually standardize MFCC features (zero-center)
     # Calculate mean and std manually for better control
@@ -190,11 +197,11 @@ def train_model(
     # Debug: Print sample values
     print("Debug - Sample preprocessed values:")
     print(f"  MFCC frame 0, first 3 coefficients: {mfcc_standardized[0, :3]}")
-    print(f"  Landmarks frame 0, first 3 values: {landmarks_normalized[0, :3]}")
+    print(f"  Landmarks frame 0, first 3 values: {landmarks_scaled[0, :3]} (scaled by {LANDMARK_SCALE_FACTOR}x)")
     print()
 
     # Create dataset with preprocessed data
-    full_dataset = AudioToLandmarksDataset(mfcc_standardized, landmarks_normalized)
+    full_dataset = AudioToLandmarksDataset(mfcc_standardized, landmarks_scaled)
 
     # Split into train and validation
     train_size = int(train_split * len(full_dataset))
@@ -210,13 +217,13 @@ def train_model(
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
 
-    # Initialize model with smaller architecture to prevent overfitting
+    # Initialize model with larger architecture to capture complex audio-landmark relationships
     input_size = mfcc_features.shape[1]  # 13 MFCC coefficients
     output_size = landmarks_flat.shape[1]  # 1404 (468 landmarks * 3 coordinates)
 
     model = LipSyncMLP(
         input_size=input_size,
-        hidden_sizes=[128, 256, 256],  # Smaller model: 3 hidden layers
+        hidden_sizes=[512, 1024, 512],  # Larger model: 3 hidden layers for complex relationships
         output_size=output_size,
         dropout=0.2
     )
@@ -235,12 +242,17 @@ def train_model(
     print()
 
     # Loss function and optimizer
-    criterion = nn.MSELoss()  # Mean Squared Error for regression
+    # Using HuberLoss instead of MSE - more robust to outliers and doesn't let model settle at zero
+    criterion = nn.HuberLoss(delta=1.0)  # Combines MSE and MAE for better gradient behavior
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
-    print(f"Loss function: MSE (Mean Squared Error)")
+    # Learning rate scheduler - reduce LR when training plateaus
+    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=200, gamma=0.5)
+
+    print(f"Loss function: HuberLoss (delta=1.0) - robust to outliers")
     print(f"Optimizer: Adam")
     print(f"Learning rate: {learning_rate}")
+    print(f"LR Scheduler: StepLR (step_size=200, gamma=0.5)")
     print()
 
     # Training loop
@@ -266,6 +278,10 @@ def train_model(
         val_loss = validate(model, val_loader, criterion, device)
         val_losses.append(val_loss)
 
+        # Step the learning rate scheduler
+        scheduler.step()
+        current_lr = optimizer.param_groups[0]['lr']
+
         epoch_time = time.time() - epoch_start
 
         # Save best model
@@ -281,6 +297,7 @@ def train_model(
                 'mfcc_std': mfcc_std,    # Manual std (shape: 1, 13)
                 'landmarks_min': landmarks_normalized.min(),
                 'landmarks_max': landmarks_normalized.max(),
+                'landmark_scale_factor': LANDMARK_SCALE_FACTOR,  # 10.0 - CRITICAL for inference
                 'epsilon': epsilon,
             }, output_path)
             best_marker = " ⭐ NEW BEST"
@@ -295,6 +312,7 @@ def train_model(
             print(f"Epoch [{epoch + 1:4d}/{epochs}] | "
                   f"Train Loss: {train_loss:.6f} | "
                   f"Val Loss: {val_loss:.6f} | "
+                  f"LR: {current_lr:.6f} | "
                   f"Time: {epoch_time:.2f}s | "
                   f"ETA: {eta/60:.1f}m{best_marker}")
 
@@ -326,7 +344,7 @@ def train_model(
         'val_losses': val_losses,
         'model_config': {
             'input_size': input_size,
-            'hidden_sizes': [128, 256, 256],  # Updated to match new architecture
+            'hidden_sizes': [512, 1024, 512],  # Updated to match new larger architecture
             'output_size': output_size,
             'dropout': 0.2
         },
@@ -334,6 +352,7 @@ def train_model(
         'mfcc_std': mfcc_std,    # Manual std (shape: 1, 13)
         'landmarks_min': landmarks_normalized.min(),
         'landmarks_max': landmarks_normalized.max(),
+        'landmark_scale_factor': LANDMARK_SCALE_FACTOR,  # 10.0 - CRITICAL for inference
         'epsilon': epsilon,
     }, output_path)
 
