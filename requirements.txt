@@ -1,0 +1,21 @@
+# Core dependencies for facial landmark tracking with MediaPipe
+# Last updated: 2026-01-12
+# Python version: 3.11+ recommended
+
+# MediaPipe - Face landmark detection
+# Latest version as of 2026-01-12: 0.10.31
+# Supports Python 3.9-3.12
+mediapipe==0.10.31
+
+# OpenCV - Video processing and computer vision
+# Using headless version to reduce bloat (no GUI dependencies)
+# Latest secure version: 4.12.0+ (fixes CVE-2025-53644)
+opencv-python-headless==4.12.0.88
+
+# NumPy - Array operations (required by both mediapipe and opencv)
+# Using latest stable version with continued security support
+numpy>=2.0.0,<3.0.0
+
+# Note: Using opencv-python-headless instead of opencv-python reduces
+# installation size by ~100MB and removes unnecessary GUI dependencies
+# (GTK, Qt) which are security attack vectors.
